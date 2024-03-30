@@ -9,3 +9,5 @@ I go for a swim everyday - For a while I wouldn't check the tides and I would en
 
 ## How?
 The program is run via a scheduled Lambda function that runs every morning at 9am. It reaches out to the [Canadian Hydrographic Service](https://tides.gc.ca/en/web-services-offered-canadian-hydrographic-service) API to get the tide predictions for the day. It then filters the predictions to only show windows of time where the tide is above 2.25M. Finally, it sends a notification to my phone with [ntfy.sh](https://ntfy.sh/).
+
+Deployment is done via terraform, and the code is written in Go. ie *GO* Swim!
