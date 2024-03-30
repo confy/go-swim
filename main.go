@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -21,6 +22,7 @@ var (
 
 )
 
+
 type TideEvent struct {
 	EventDate time.Time `json:"eventDate"`
 	QcFlagCode string `json:"qcFlagCode"`
@@ -35,11 +37,23 @@ type SwimWindow struct {
 }
 
 
-func handleRequest(ctx context.Context, event interface{}) (string, error) {
+type Output struct {
+	Title string
+	Content string
+	Tags []string
+}
+
+
+func main() {
+	lambda.Start(handleRequest)
+}
+
+
+func handleRequest(ctx context.Context, event interface{}) (Output, error) {
 	PST, err := time.LoadLocation(TZ)
 	if err != nil {
 		fmt.Println(err)
-		return "", err
+		return Output{}, err
 	}
 
 	t := time.Now()
@@ -49,7 +63,7 @@ func handleRequest(ctx context.Context, event interface{}) (string, error) {
 	tideEvents, err := getStationTidePredictions(STATION_ID, startTime, endTime)
 	if err != nil {
 		fmt.Println(err)
-		return "", err
+		return Output{}, err
 	}
 
 	swimWindows := createSwimWindowsFromTides(tideEvents)
@@ -57,25 +71,26 @@ func handleRequest(ctx context.Context, event interface{}) (string, error) {
 	dateOutput := startTime.Format("Mon January 2, 2006")
 	metersOutput := strconv.FormatFloat(MinumumTideHeightMeters, 'f', 2, 64)
 
-	output := fmt.Sprintf("%s - GO SWIM!\nTides are higher than %s meters during:\n", dateOutput, metersOutput)
-
+	output := Output{
+		Title: fmt.Sprintf("%s - GO SWIM!", dateOutput),
+		Tags: []string{"ocean", "swimmer"},
+		Content: fmt.Sprintf("Tides are higher than %s meters during:\n", metersOutput),
+	}
+	
 	for _, window := range swimWindows {
-		window.StartTime = window.StartTime.In(PST)
-		window.EndTime = window.EndTime.In(PST)
-		windowString := fmt.Sprintf("%s - %s\n", window.StartTime.Format("15:04:05"), window.EndTime.Format("15:04:05"))
-		output += windowString
+		output.Content += fmt.Sprintf("%s - %s\n", window.StartTime.In(PST).Format("15:04"), window.EndTime.In(PST).Format("15:04"))
 	}
 
 	fmt.Println(output)
+
+	req, _ := http.NewRequest("POST", "https://ntfy.sh/go-swim-vancouver", strings.NewReader(output.Content))
+	req.Header.Set("Title", output.Title)
+	req.Header.Set("Tags", strings.Join(output.Tags, ","))
+	_, err = http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Println(err)
+	}
 	return output, nil
-}
-
-
-func getTimeWindow(timezone time.Location) (time.Time, time.Time) {
-	t := time.Now()
-	startTime := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, &timezone).In(time.UTC)
-	endTime := startTime.AddDate(0, 0, 1)
-	return startTime, endTime
 }
 
 
@@ -112,12 +127,10 @@ func createSwimWindowsFromTides(tideEvents []TideEvent) []SwimWindow {
 			if swimWindow == nil {
 				swimWindow = &SwimWindow{StartTime: event.EventDate}
 			}
-		} else {
-			if swimWindow != nil {
-				swimWindow.EndTime = event.EventDate
-				swimWindows = append(swimWindows, *swimWindow)
-				swimWindow = nil
-			}
+		} else if swimWindow != nil {
+			swimWindow.EndTime = event.EventDate
+			swimWindows = append(swimWindows, *swimWindow)
+			swimWindow = nil
 		}
 	}
 
@@ -126,9 +139,4 @@ func createSwimWindowsFromTides(tideEvents []TideEvent) []SwimWindow {
 		swimWindows = append(swimWindows, *swimWindow)
 	}
 	return swimWindows
-}
-
-
-func main() {
-	lambda.Start(handleRequest)
 }
