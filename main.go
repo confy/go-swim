@@ -1,17 +1,16 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/aws/aws-lambda-go/lambda"
 )
-
 
 var (
 	API_URL = "https://api.iwls-sine.azure.cloud-nuage.dfo-mpo.gc.ca/api/v1"
@@ -22,7 +21,6 @@ var (
 
 )
 
-
 type TideEvent struct {
 	EventDate time.Time `json:"eventDate"`
 	QcFlagCode string `json:"qcFlagCode"`
@@ -30,6 +28,10 @@ type TideEvent struct {
 	TimeSeriesId string `json:"timeSeriesId"`
 }
 
+type HiLoTides struct {
+	HighTides []TideEvent
+	LowTides  []TideEvent
+}
 
 type SwimWindow struct {
 	StartTime time.Time
@@ -43,17 +45,16 @@ type Output struct {
 	Tags []string
 }
 
-
 func main() {
-	lambda.Start(handleRequest)
+	lambda.Start(goSwim)
+	// goSwim()
 }
 
-
-func handleRequest(ctx context.Context, event interface{}) (Output, error) {
+func goSwim() (Output, error) {
 	PST, err := time.LoadLocation(TZ)
 	if err != nil {
-		fmt.Println(err)
-		return Output{}, err
+		fmt.Println("Error loading timezone: ", err)
+		panic(err)
 	}
 
 	t := time.Now()
@@ -62,62 +63,98 @@ func handleRequest(ctx context.Context, event interface{}) (Output, error) {
 
 	tideEvents, err := getStationTidePredictions(STATION_ID, startTime, endTime)
 	if err != nil {
-		fmt.Println(err)
-		return Output{}, err
+		fmt.Println("Error getting tide predictions: ", err)
+		panic(err)
 	}
 
 	swimWindows := createSwimWindowsFromTides(tideEvents)
 
-	dateOutput := startTime.Format("Mon January 2, 2006")
-	metersOutput := strconv.FormatFloat(MinumumTideHeightMeters, 'f', 2, 64)
-
-	output := Output{
-		Title: fmt.Sprintf("%s - GO SWIM!", dateOutput),
-		Tags: []string{"ocean", "swimmer"},
-		Content: fmt.Sprintf("Tides are higher than %s meters during:\n", metersOutput),
-	}
-	
-	for _, window := range swimWindows {
-		output.Content += fmt.Sprintf("%s - %s\n", window.StartTime.In(PST).Format("15:04"), window.EndTime.In(PST).Format("15:04"))
+	hiLoTideEvents, err := getStationHiLoTide(STATION_ID, startTime, endTime)
+	if err != nil {
+		fmt.Println("Error getting hi lo tides: ", err)
+		panic(err)
 	}
 
-	fmt.Println(output)
+	hiLoTides := formatHiLoTides(hiLoTideEvents)
+
+	output := formatOutput(startTime, hiLoTides, PST, swimWindows)
+
 
 	req, _ := http.NewRequest("POST", "https://ntfy.sh/go-swim-vancouver", strings.NewReader(output.Content))
 	req.Header.Set("Title", output.Title)
 	req.Header.Set("Tags", strings.Join(output.Tags, ","))
 	_, err = http.DefaultClient.Do(req)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Error sending notification: ", err)
+		panic(err)
 	}
 	return output, nil
 }
 
-
-func getStationTidePredictions(stationID string, startTime time.Time, endTime time.Time) ([]TideEvent, error) {
-	reqURL := fmt.Sprintf("%s/stations/%s/data?time-series-code=wlp&from=%s&to=%s&resolution=%s", API_URL, stationID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339), RESOLUTION)
+// Make a request to the station API and return TideEvent structs
+func makeStationRequest(reqURL string) ([]TideEvent, error) {
 	httpClient := &http.Client{}
 	req, err := http.NewRequest(http.MethodGet, reqURL, nil)
 	if err != nil {
-		fmt.Println(err)
-		return nil, err
+		return nil, fmt.Errorf("Error creating request: %v", err)
 	}
 	req.Header.Add("accept", "*/*")
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		fmt.Println(err)
-		return nil, err
+		return nil, fmt.Errorf("Error making request: %v", err)
 	}
 	var tideEvents []TideEvent
 	err = json.NewDecoder(resp.Body).Decode(&tideEvents)
 	if err != nil {
-		fmt.Println(err)
-		return nil, err
+		return nil, fmt.Errorf("Error decoding response: %v", err)
 	}
 	return tideEvents, nil
 }
 
+// Get the high and low tide events
+func getStationHiLoTide(stationID string, startTime time.Time, endTime time.Time) ([]TideEvent, error) {
+	reqUrl := fmt.Sprintf("%s/stations/%s/data?time-series-code=wlp-hilo&from=%s&to=%s", API_URL, stationID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
+	tideEvents, err := makeStationRequest(reqUrl)
+	if err != nil {
+		return nil, fmt.Errorf("Error getting station data: %v", err)
+	}
+	return tideEvents, nil
+}
 
+// Get the tide predictions for every interval
+func getStationTidePredictions(stationID string, startTime time.Time, endTime time.Time) ([]TideEvent, error) {
+	reqURL := fmt.Sprintf("%s/stations/%s/data?time-series-code=wlp&from=%s&to=%s&resolution=%s", API_URL, stationID, startTime.Format(time.RFC3339), endTime.Format(time.RFC3339), RESOLUTION)
+	tideEvents, err := makeStationRequest(reqURL)
+	if err != nil {
+		return nil, fmt.Errorf("Error getting station data: %v", err)
+	}
+	return tideEvents, nil
+}
+
+// Format the hi lo tide events into sorted high and low tides
+func formatHiLoTides(hiLoTideEvents []TideEvent) HiLoTides {
+	sort.Slice(hiLoTideEvents, func(i, j int) bool {
+		return hiLoTideEvents[i].EventDate.Before(hiLoTideEvents[j].EventDate)
+	})
+
+	var hiLoTides HiLoTides
+	for i := 0; i < len(hiLoTideEvents); i++ {
+		current := hiLoTideEvents[i]
+		if i < len(hiLoTideEvents)-1 {
+			next := hiLoTideEvents[i+1]
+			if current.Value > next.Value {
+				hiLoTides.HighTides = append(hiLoTides.HighTides, current)
+			} else {
+				hiLoTides.LowTides = append(hiLoTides.LowTides, current)
+			}
+		} else {
+			hiLoTides.LowTides = append(hiLoTides.LowTides, current)
+		}
+	}
+	return hiLoTides
+}
+
+// Create swim windows above the minimum tide height
 func createSwimWindowsFromTides(tideEvents []TideEvent) []SwimWindow {
 	var swimWindows []SwimWindow
 	var swimWindow *SwimWindow
@@ -139,4 +176,29 @@ func createSwimWindowsFromTides(tideEvents []TideEvent) []SwimWindow {
 		swimWindows = append(swimWindows, *swimWindow)
 	}
 	return swimWindows
+}
+
+// Format the output struct for ntfy.sh
+func formatOutput(startTime time.Time, hiLoTides HiLoTides, tz *time.Location, swimWindows []SwimWindow) Output {
+	dateOutput := startTime.Format("Mon January 2, 2006")
+	metersOutput := strconv.FormatFloat(MinumumTideHeightMeters, 'f', 2, 64)
+
+	output := Output{
+		Title:   fmt.Sprintf("%s - GO SWIM!", dateOutput),
+		Tags:    []string{"ocean", "swimmer"},
+		Content: "",
+	}
+
+	output.Content += "High Tide: "
+	for _, tide := range hiLoTides.HighTides {
+		output.Content += fmt.Sprintf("%s ", tide.EventDate.In(tz).Format("15:04"))
+	}
+
+	output.Content += fmt.Sprintf("\nTide is higher than %s meters during:\n", metersOutput)
+	for _, window := range swimWindows {
+		output.Content += fmt.Sprintf("%s - %s\n", window.StartTime.In(tz).Format("15:04"), window.EndTime.In(tz).Format("15:04"))
+	}
+	// remove the last newline
+	output.Content = output.Content[:len(output.Content)-1]
+	return output
 }
