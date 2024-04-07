@@ -2,7 +2,7 @@
 
 Go swim is a simple program that checks tide predictions before sending alerts with the best time to swim.
 
-![image](https://github.com/confy/go-swim/assets/4352706/8d69c0cb-026f-4880-b895-488014af8522)
+![image](https://github.com/confy/go-swim/assets/4352706/45013af2-a2f9-4ab4-8ed5-d9ef22370b15)
 
 ## Why?
 I go for a swim in the ocean everyday. For a while I wouldn't check the tides and would sometimes end up taking a pretty terrible swim at a very shallow beach. Lately I've been checking the tides manually, but I thought it would be fun to automate the process.
