@@ -17,7 +17,7 @@ var (
 	RESOLUTION = "FIVE_MINUTES"
 	TZ = "America/Vancouver"
 	MinumumTideHeightMeters = 2.25
-
+	NTFY_URL = "https://ntfy.sh/go-swim-vancouver"
 )
 
 type TideEvent struct {
@@ -40,7 +40,7 @@ type SwimWindow struct {
 
 type Output struct {
 	Title string
-	Content string
+	Body string
 	Tags []string
 }
 
@@ -75,8 +75,7 @@ func goSwim() (Output, error) {
 	hiLoTides := formatHiLoTides(hiLoTideEvents)
 
 	output := formatOutput(startTime, hiLoTides, tz, swimWindows)
-
-	req, _ := http.NewRequest("POST", "https://ntfy.sh/go-swim-vancouver", strings.NewReader(output.Content))
+	req, _ := http.NewRequest("POST", NTFY_URL, strings.NewReader(output.Body))
 	req.Header.Set("Title", output.Title)
 	req.Header.Set("Tags", strings.Join(output.Tags, ","))
 	_, err = http.DefaultClient.Do(req)
@@ -180,22 +179,20 @@ func formatOutput(startTime time.Time, hiLoTides HiLoTides, tz *time.Location, s
 	dateOutput := startTime.Format("Mon January 2, 2006")
 	metersOutput := strconv.FormatFloat(MinumumTideHeightMeters, 'f', 2, 64)
 
-	output := Output{
-		Title:   fmt.Sprintf("%s - GO SWIM!", dateOutput),
-		Tags:    []string{"ocean", "swimmer"},
-		Content: "",
-	}
-
-	output.Content += "High Tide: "
+	var body strings.Builder
+	highTide := "High Tide: "
 	for _, tide := range hiLoTides.HighTides {
-		output.Content += fmt.Sprintf("%s ", tide.EventDate.In(tz).Format("15:04"))
+		highTide += fmt.Sprintf("%s ", tide.EventDate.In(tz).Format("15:04"))
 	}
 
-	output.Content += fmt.Sprintf("\nTide is higher than %s meters during:\n", metersOutput)
+	body.WriteString(highTide + "\n")
+	body.WriteString(fmt.Sprintf("Tide is higher than %s meters during:\n", metersOutput))
 	for _, window := range swimWindows {
-		output.Content += fmt.Sprintf("%s - %s\n", window.StartTime.In(tz).Format("15:04"), window.EndTime.In(tz).Format("15:04"))
+		body.WriteString(fmt.Sprintf("%s - %s\n", window.StartTime.In(tz).Format("15:04"), window.EndTime.In(tz).Format("15:04")))
 	}
-	// remove the last newline
-	output.Content = output.Content[:len(output.Content)-1]
-	return output
+	return Output{
+		Title: fmt.Sprintf("%s - GO SWIM!", dateOutput),
+		Tags:  []string{"ocean", "swimmer"},
+		Body:  strings.TrimSuffix(body.String(), "\n"),
+	}
 }
