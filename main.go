@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,14 +50,14 @@ func main() {
 }
 
 func goSwim() (Output, error) {
-	PST, err := time.LoadLocation(TZ)
+	tz, err := time.LoadLocation(TZ)
 	if err != nil {
 		fmt.Println("Error loading timezone: ", err)
 		panic(err)
 	}
 
 	t := time.Now()
-	startTime := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, PST).In(time.UTC)
+	startTime := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, tz).In(time.UTC)
 	endTime := startTime.AddDate(0, 0, 1)
 
 	tideEvents, err := getStationTidePredictions(STATION_ID, startTime, endTime)
@@ -66,7 +65,6 @@ func goSwim() (Output, error) {
 		fmt.Println("Error getting tide predictions: ", err)
 		panic(err)
 	}
-
 	swimWindows := createSwimWindowsFromTides(tideEvents)
 
 	hiLoTideEvents, err := getStationHiLoTide(STATION_ID, startTime, endTime)
@@ -74,11 +72,9 @@ func goSwim() (Output, error) {
 		fmt.Println("Error getting hi lo tides: ", err)
 		panic(err)
 	}
-
 	hiLoTides := formatHiLoTides(hiLoTideEvents)
 
-	output := formatOutput(startTime, hiLoTides, PST, swimWindows)
-
+	output := formatOutput(startTime, hiLoTides, tz, swimWindows)
 
 	req, _ := http.NewRequest("POST", "https://ntfy.sh/go-swim-vancouver", strings.NewReader(output.Content))
 	req.Header.Set("Title", output.Title)
@@ -133,24 +129,25 @@ func getStationTidePredictions(stationID string, startTime time.Time, endTime ti
 
 // Format the hi lo tide events into sorted high and low tides
 func formatHiLoTides(hiLoTideEvents []TideEvent) HiLoTides {
-	sort.Slice(hiLoTideEvents, func(i, j int) bool {
-		return hiLoTideEvents[i].EventDate.Before(hiLoTideEvents[j].EventDate)
-	})
-
 	var hiLoTides HiLoTides
+	var hiTideIndex int
+
+	if hiLoTideEvents[0].Value > hiLoTideEvents[1].Value {
+		// first event is a high tide
+		hiTideIndex = 0	
+	}	else {
+		// first event is a low tide
+		hiTideIndex = 1
+	}
+
 	for i := 0; i < len(hiLoTideEvents); i++ {
-		current := hiLoTideEvents[i]
-		if i < len(hiLoTideEvents)-1 {
-			next := hiLoTideEvents[i+1]
-			if current.Value > next.Value {
-				hiLoTides.HighTides = append(hiLoTides.HighTides, current)
-			} else {
-				hiLoTides.LowTides = append(hiLoTides.LowTides, current)
-			}
+		if i % 2 == hiTideIndex {
+			hiLoTides.HighTides = append(hiLoTides.HighTides, hiLoTideEvents[i])
 		} else {
-			hiLoTides.LowTides = append(hiLoTides.LowTides, current)
+			hiLoTides.LowTides = append(hiLoTides.LowTides, hiLoTideEvents[i])
 		}
 	}
+
 	return hiLoTides
 }
 
